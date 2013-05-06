@@ -6,67 +6,57 @@ from pprint import pprint
 import colortrans
 import colorsys
 
-SENSOR_PATH = '/usr/bin/sensors'
-POLL_TIME = 1.5
+POLL_TIME = 2
 REGEX_PAT = re.compile('\:|\n  |\n')
+LOWER_BOUND = 0
+UPPER_BOUND = 0
 SATURATION = .6
 LIGHTNESS = 1
 
 def runSensors ():
-	return Popen([SENSOR_PATH, '-u'], stdout=PIPE, stderr=PIPE)
+	return Popen(['/usr/bin/sensors', '-u'], stdout=PIPE, stderr=PIPE)
 
-def parseOutput (s):
-	output = []
-
-	# split on the adapters
+def outToDict (s):
 	adapters = s.split('\n\n')
-
+	out = []
 	for adapter in adapters:
-		lines = adapter.split('\n')
-		length, fields, currentField = len(lines), [], None
-
-		# step through the unparsed lines, add fields and subfields based on indentation
-		for lineIndex in range(length):
-			line = lines[lineIndex]
-
-			if line.startswith('  '): # line is a subfield
+		t1 = adapter.split('\n')
+		length, t2, cur = len(t1), [], None
+		for i in range(length):
+			line = t1[i]
+			if len(line) > 2 and line[0:2] == '  ':
 				t3 = line[2:].split(': ')
-				currentField.append(t3) # append the subfield to the current field
+				cur.append(t3)
+			else:
+				cur = [line[:-1]]
+				t2.append(cur)
+		out.append(t2[2:])
+	return out[:-2][0]
 
-			else: # add line as a new field
-				currentField = [line[:-1]] 
-				fields.append(currentField)
+def _strip_hex(h):
+    # Strip leading `0x` if exists.
+    if h.startswith('0x'):
+        h = h.lstrip('0x')
+    return h
 
-		output.append(fields[2:])
-	return output[:-2][0]
-
-def _strip_hex (s):
-    if s.startswith('0x'):
-        s = s.lstrip('0x')
-    return s
-
-def getHexColor (num, denom):
-	ratio = num / denom
+def getHexColor (t):
+	ratio = (float(t[0]) - LOWER_BOUND) / float(t[1]) # -24 gives us better range of colors (~room temp - max)
 
 	# Hue, Saturation, Lightness
-	rgb = colorsys.hls_to_rgb(colorsys.ONE_THIRD - colorsys.ONE_THIRD * ratio, SATURATION, LIGHTNESS)
+	rgb = colorsys.hls_to_rgb(*(colorsys.ONE_THIRD - colorsys.ONE_THIRD * ratio, SATURATION, LIGHTNESS))
 
 	# convert to hex values ''.join([str, str, str])
 	hexVals = [_strip_hex(str(hex(int(i * 255)))) for i in rgb]
+
 	return colortrans.rgb2short(''.join(hexVals))
 
 def formatColors (l):
-	sOut = ''
+	out = ''
 	for sensor in l:
-		sensor = {'name': sensor[0],'curTemp': float(sensor[1][1]), 'critTemp': float(sensor[2][1])}
-		sensor['percentage'] = (sensor['curTemp'] / sensor['critTemp']) * 100
-		sensor['color']  = getHexColor(sensor['curTemp'], sensor['critTemp'])[0]
-		sOut += '{}:\t\033[38;5;{:<}m{} / {:<}\t({} %)\033[0m\n'.format(sensor['name'], \
-																		 sensor['color'], \
-																		 sensor['curTemp'], \
-																		 sensor['critTemp'], \
-																		 int(sensor['percentage']))
-	return sOut
+		v1, v2 = sensor[1][1], sensor[2][1]
+		color = getHexColor((v1, v2))
+		out += '%s: \033[38;5;%sm%s / %s\033[0m\n' % (sensor[0], color[0], v1, sensor[2][1])
+	return out
 
 def watch ():
 	running_procs = [runSensors()]
@@ -75,7 +65,7 @@ def watch ():
 			ret_code = proc.poll()
 			if ret_code is not None:
 				proc_out = proc.stdout.read().decode("utf-8")
-				print(formatColors(parseOutput(proc_out)))
+				print(formatColors(outToDict(proc_out)))
 				running_procs.remove(proc)
 				running_procs.append(runSensors())
 
